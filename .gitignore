@@ -1,0 +1,64 @@
+# =============================================================================
+#  .gitignore — STM32F103 + FreeRTOS + Keil MDK 工程
+#
+#  原则：仓库里只放「源码 + 工程文件 + CubeMX 配置 + 文档」，
+#        编译中间产物、本机个人设置、与工程无关的大体积第三方库都不提交。
+#  本工程原始体积约 107MB，按下面规则过滤后约 15MB。
+# =============================================================================
+
+# ---------------------------------------------------------------- Keil 编译产物
+# 本工程 OutputDirectory = MDK-ARM\001Test\  （.o / .crf / .axf / .map 全在这里）
+MDK-ARM/001Test/
+Objects/
+Listings/
+DebugConfig/
+*.o
+*.d
+*.crf
+*.dep
+*.axf
+*.hex
+*.bin
+*.elf
+*.map
+*.lst
+*.lnp
+*.sct
+*.iex
+*.htm
+*.build_log.htm
+*.bak
+*.tmp
+
+# ---------------------------------------------------------------- Keil 个人设置
+# *.uvguix.* 里记录的是「谁在什么分辨率下把窗口放在哪」，每个人的都不一样，
+# 而且体积不小（本工程 146KB），属于典型的"本机临时文件"。
+*.uvguix.*
+
+# ---------------------------------------------------------------- 编辑器 / 系统
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---------------------------------------------------------------- 日志
+*.log
+JLinkLog.txt
+
+# ---------------------------------------------------------------- 无关的大体积第三方库
+# 本工程只用到 CMSIS 的 Core / Include / Device(headers)，
+# 下面这些是 CMSIS 包附带、但本工程完全没有引用的目录（合计约 47MB）：
+#   DSP/  11.9MB  CMSIS-DSP 算法库
+#   Lib/  34.1MB  预编译的 DSP 数学库（arm_cortexM3b_math.lib 等）
+#   NN/    0.8MB  CMSIS-NN 神经网络库
+#   Core_A/        Cortex-A 支持
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/Lib/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/Core_A/
+Drivers/CMSIS/docs/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/RTOS2/
