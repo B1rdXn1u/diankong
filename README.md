@@ -400,27 +400,19 @@ Yaw 没有磁力计参考，只能靠陀螺仪积分（必然存在缓慢漂移�
 
 ## 11. 遇到的问题与解决方法
 
-| # | 现象 | 原因 | 解决方法 |
-|---|---|---|---|
-| 1 | `cmsis_os2.c` 编译报大量未定义 | 工程自己的 `task.c / task.h` 与 FreeRTOS 内核头文件 `task.h` **重名**，而 `..\MDK-ARM` 在包含路径最前面，内核的 `#include "task.h"` 拿到了用户的头文件 | 用户文件改名为 **`app_rtos.c / app_rtos.h`** |
-| 2 | 三个任务一个都不运行 | `main.c` 仍是裸机大循环，且从未调用 `AppRTOS_Init()` | `main()` 只保留硬件初始化+启动调度器，任务在 `MX_FREERTOS_Init()` 里创建 |
-| 3 | `osThreadNew()` 全部返回 NULL | `configTOTAL_HEAP_SIZE` 只有 3072，装不下三个任务栈+TCB | 改为 **8192** |
-| 4 | `cmsis_os2.c` 报 `#error: Definition INCLUDE_xTaskGetCurrentTaskHandle must equal 1` | CubeMX 生成的配置缺该宏 | 在 `FreeRTOSConfig.h` 补 `#define INCLUDE_xTaskGetCurrentTaskHandle 1` |
-| 5 | 链接报 `L6200E: Symbol SysTick_Handler multiply defined` | V1 时代的 `#define xPortSysTickHandler SysTick_Handler` 留在了 V2 工程里，与 `cmsis_os2.c` 自带实现冲突 | 按 CubeMX 的 V2 模板把该宏注释掉（HAL 时基已改为 TIM4） |
-| 6 | `freertos_os2.h` 报 `#error: expected a file name` | 工程 RTE 组件未定义 `CMSIS_device_header` | 在 `FreeRTOSConfig.h` 的 USER CODE 段 `#define CMSIS_device_header "stm32f1xx.h"` |
-| 7 | OLED 任务永远卡在等初始化 | 二值信号量计数只有 1，而 `UART_Task`、`OLED_Task` **两个**任务都在等它 | 改用 **事件标志** `init_evt` + `osFlagsNoClear`，一次置位全部唤醒 |
-| 8 | 刷屏时角度数据偶发错乱 / I2C 返回 `HAL_BUSY` | OLED 与 MPU6050 共用 I2C1，HAL 阻塞传输不可重入 | 加 **`i2c_mutex`**（`osMutexPrioInherit`）串行化总线访问，并把"锁内只拷贝、出锁再刷屏/发送"作为规则 |
-| 9 | 复位后角度匀速漂：Roll ≈ 1 °/s、Yaw ≈ 10 °/s；再复位又正常 | 零偏校准是**开机一次性**的，校准时板子被手扶/在转动，平均转速被当成零偏扣掉 | ①上电先等 500 ms 再校准 ②采样 1000 次 ③**有效性检查+最多 3 次重试** ④OLED 显示三轴零偏、串口开机打印 `Bias X/Y/Z`，便于自查 |
-| 10 | 刷屏时数字闪烁、I2C 占用高 | 每字符 16 次 I2C 传输，整行重写几十毫秒 | 显示层加字符级缓存，只重写变化的字符 |
-| 11 | 用 `printf("%f")` 输出角度乱码/崩溃 | Keil 默认 C 库不带浮点 printf | 角度先换算成 0.01° 整数，手工拼字符串上报 |
+### 11.1 OLED 从标准库版本移植到 HAL 库
 
-### 调试经验小结
+- **问题**：初学 OLED 时用的是江协科技（江科大）的例程，那套代码是基于**标准库**写的；转到 HAL 库以后不会用 OLED，手上没有 HAL 版本的驱动，没法直接编进本工程。
+- **查资料的过程**：先看了 keysking 的教程，但那套教程更偏向"在 OLED 上显示图片"，与本工程"显示字符和数值"的需求对不上；后来在他的**评论区**找到了江协科技的 **HAL 库版 OLED 初始化代码**。
+- **解决方法**：以那份 HAL 库版初始化代码为参考，把原来标准库版本里的写命令、写数据、光标定位、显示字符等逻辑逐个搬到 HAL 的 `HAL_I2C_Mem_Write()` 接口上，并把 **8×16 ASCII 字库**（`oled_font.h`）一并移植过来（改写过程借助 AI 辅助）。
+- **结果**：OLED 正常点亮，能按 4 行 × 16 字符排版显示；OLED 与 MPU6050 共用 I2C1（地址 0x3C / 0x68）。
 
-- **调度相关**：遇到"任务不跑"先查三步 —— ①`osKernelInitialize()` 之后才创建对象吗 ②堆够不够 ③`AppRTOS_Init()` 到底调没调用。
-- **I2C 相关**：`HAL_BUSY` / 数据错乱 90% 是"多任务共用一条总线却没加锁"。
-- **角度漂移**：先分清"匀速漂"（陀螺零偏没扣干净）和"往一个方向加速/指数趋近"（加速度计零偏或符号错），
-  两者排查方向完全不同。
-- **中断里只做最少的事**：搬数据 + 发通知，其余交给任务。
+### 11.2 静止时三个姿态角一直自增
+
+- **问题**：照着网上教程写第一版姿态解算，模块静止放在桌面上时，Roll / Pitch / Yaw 三个角仍然**单方向持续增大**（实测 Roll 约 1 °/s、Yaw 约 10 °/s），放得越久偏得越多。
+- **原因**：借助 AI 一起排查后确认是**初始零偏（陀螺仪零偏）处理出错**——开机校准时把错误的值当成了零偏扣掉，之后每一帧都在减一个不正确的偏移，表现出来就是恒定速率的角度漂移。
+- **解决方法**：重做校准流程——上电先等传感器稳定再校准、增加校准采样次数、对校准结果做有效性检查（器件是否应答 / 三轴零偏是否全为 0 / 单轴是否超过阈值），不合格就自动重试；同时把三轴零偏显示在 OLED 上便于自查。处理后，静止状态下角度基本不再漂移。
+- **遗留现象**：Yaw 没有磁力计提供绝对朝向参考，长时间仍会缓慢漂移，属于物理限制，不是程序错误。
 
 ## 12. 上电验收现象
 
@@ -432,18 +424,6 @@ Yaw 没有磁力计参考，只能靠陀螺仪积分（必然存在缓慢漂移�
 5. 向串口发送任意字符，会被原样回显
 6. 静止放置：Roll / Pitch 基本不动；Yaw 因无磁力计参考会极缓慢漂移（正常现象）
 7. 倾斜模块：Roll / Pitch 实时跟随，响应约 0.5 s 时间常数
-
-## 13. 演示视频与学习笔记
-
-| 内容 | 文件 | 说明 |
-|---|---|---|
-| 姿态解算演示 | [`docs/media/attitude-demo.mp4`](docs/media/attitude-demo.mp4) | 上电 → `Keep still!` 校准 → 三轴零偏 `Bias X/Y/Z` → 主界面；倾斜/旋转模块观察 Roll / Pitch / Yaw 跟随 |
-| 串口收发演示 | [`docs/media/uart-dma-demo.mp4`](docs/media/uart-dma-demo.mp4) | DMA + 空闲中断接收、原样回显、1 Hz 姿态上报 |
-| 学习笔记 | [`docs/notes/`](docs/notes/) | 开发过程中的原理整理与调试记录（图片） |
-
-> 在 GitHub 网页上直接点开 `.mp4` 会在浏览器里在线播放，无需下载。
-> 仓库整体约 60 MB，其中 `docs/` 占 40 MB；若只需要代码，可浅克隆：
-> `git clone --depth 1 <仓库地址>`。
 
 ---
 
